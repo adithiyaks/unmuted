@@ -78,16 +78,17 @@ def speak(text, sapi_rate=3, sapi_volume=80):
             print(f"[TTS ERROR] {e}")
     threading.Thread(target=_speak, daemon=True).start()
 
-# --- MEDIAPIPE SETUP (HANDS + SELFIE SEGMENTATION) ---
+# --- MEDIAPIPE SETUP (HANDS ONLY) ---
 mp_hands = mp.solutions.hands
-mp_selfie_segmentation = mp.solutions.selfie_segmentation
 mp_drawing = mp.solutions.drawing_utils
 
 def mediapipe_detection(image, model):
-    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) 
-    rgb.flags.writeable = False
-    results = model.process(rgb)
-    return image, results, rgb
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) 
+    image.flags.writeable = False
+    results = model.process(image)
+    image.flags.writeable = True
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR) 
+    return image, results
 
 def draw_styled_landmarks(image, results):
     if results.multi_hand_landmarks:
@@ -222,22 +223,16 @@ if cap is None:
     print(f"[ERROR] Could not open camera {CAMERA_INDEX if CAMERA_INDEX is not None else '(auto)'}. Please check your webcam connection.")
     exit(1)
 
-# Vision Models (Hands Tracking + Real Hand Semantic Segmentation)
-with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands, \
-     mp_selfie_segmentation.SelfieSegmentation(model_selection=1) as selfie_seg:
-    
-    # Pre-allocated structuring elements for high-FPS mask operations
-    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
-    morph_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-
+# Hand model
+with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5) as hands:
     while cap.isOpened():
-        loop_start_time = time.time()
+
         ret, frame = cap.read()
         if not ret:
             break
 
         # detection
-        image, results, rgb_frame = mediapipe_detection(frame, hands)
+        image, results = mediapipe_detection(frame, hands)
         
         # draw
         draw_styled_landmarks(image, results)
@@ -305,54 +300,7 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
         status_text = "Tracking: " + (", ".join(status_list) if status_list else "NONE")
         cv2.putText(image, status_text, (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 1)
 
-        # --- SPATIAL VISION HUD (REAL HAND SEMANTIC SEGMENTATION) ---
-        visual_hud = np.zeros_like(frame)
-        
-        if results.multi_hand_landmarks:
-            h, w, _ = frame.shape
-            hand_roi = np.zeros((h, w), dtype=np.uint8)
-            for hand_landmarks in results.multi_hand_landmarks:
-                points = []
-                for lm in hand_landmarks.landmark:
-                    px, py = int(lm.x * w), int(lm.y * h)
-                    points.append([px, py])
-                
-                points = np.array(points, dtype=np.int32)
-                hull = cv2.convexHull(points)
-                cv2.fillPoly(hand_roi, [hull], 255)
-            
-            # Dilate ROI mask to encompass the full outer contours of all fingers
-            hand_roi = cv2.dilate(hand_roi, dilate_kernel)
-            
-            # Semantic segmentation on actual camera frame pixels
-            seg_results = selfie_seg.process(rgb_frame)
-            seg_mask = seg_results.segmentation_mask  # float32 [0.0, 1.0]
-            
-            # Isolate hand pixels from person segmentation gated by hand ROI
-            hand_mask = np.where((seg_mask > 0.35) & (hand_roi > 0), 255, 0).astype(np.uint8)
-            
-            if np.any(hand_mask > 0):
-                # Clean up mask edges
-                hand_mask = cv2.morphologyEx(hand_mask, cv2.MORPH_CLOSE, morph_kernel)
-                
-                # Glowing Aura (51x51 Gaussian Blur) + Solid Core (~240-255 intensity)
-                aura = cv2.GaussianBlur(hand_mask, (51, 51), 0)
-                core = cv2.GaussianBlur(hand_mask, (7, 7), 0)
-                
-                # Smooth glowing transition: solid white core fading into outer halo
-                combined = np.clip(core.astype(np.float32) * 0.85 + aura.astype(np.float32) * 0.55, 0, 250).astype(np.uint8)
-                visual_hud = cv2.merge([combined, combined, combined])
-        
-        # Calculate latency and FPS
-        latency = (time.time() - loop_start_time) * 1000
-        fps = 1000.0 / latency if latency > 0 else 0
-        
-        # Telemetry HUD
-        cv2.putText(visual_hud, "EDGE_AI // SPATIAL_OCCUPANCY_MASK", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
-        cv2.putText(visual_hud, f"LATENCY: {latency:.1f}ms | FPS: {fps:.1f}", (15, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (120, 120, 120), 1)
-
         cv2.imshow('UNMUTED Prototype', image)
-        cv2.imshow('UNMUTED - Spatial Vision HUD', visual_hud)
 
         if cv2.waitKey(10) & 0xFF == ord('q'):
             break
