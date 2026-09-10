@@ -47,7 +47,7 @@ threshold = 0.85          # Prediction confidence threshold (filters out low-con
 CONFIDENCE_MARGIN = 0.35  # Top class must lead runner-up by at least 35% to prevent ambiguous guesses
 CONSISTENCY_FRAMES = 6    # Must hold same high-confidence sign for 6 consecutive frames (~200ms)
 MIN_ACTIVE_VELOCITY = 0.10 # Active movement gate; stationary hands stay in "Status: ..." and never default
-SPEAK_COOLDOWN = 3.0      # Seconds before repeating the same word
+SPEAK_COOLDOWN = 3.1      # Seconds before repeating the same word
 CAMERA_INDEX = None   # Set to 0, 1, 2 for a specific camera, or None for auto-detect
 
 # Check if camera index passed via command line argument (e.g. `python 3_inference_pc.py 1`)
