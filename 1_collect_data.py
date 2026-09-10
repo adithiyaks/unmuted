@@ -56,7 +56,21 @@ def extract_keypoints(results):
             # MediaPipe hands label: "Left" means it looks like a left hand.
             handedness = results.multi_handedness[idx].classification[0].label
             
-            flattened = np.array([[lm.x, lm.y, lm.z] for lm in hand_curr.landmark]).flatten()
+            landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_curr.landmark])
+            
+            # 1. Zero-Center to Wrist (makes it invariant to screen position)
+            wrist = landmarks[0]
+            landmarks = landmarks - wrist
+            
+            # 2. Depth/Scale Normalization (makes it invariant to camera distance)
+            x_max, x_min = np.max(landmarks[:, 0]), np.min(landmarks[:, 0])
+            y_max, y_min = np.max(landmarks[:, 1]), np.min(landmarks[:, 1])
+            box_size = max(x_max - x_min, y_max - y_min)
+            
+            if box_size > 0:
+                landmarks = landmarks / box_size
+                
+            flattened = landmarks.flatten()
             
             if handedness == 'Right':
                 lh = flattened

@@ -12,6 +12,7 @@ import threading
 import subprocess
 
 # --- CONFIGURATION ---
+terminal_logs = []
 DATA_PATH = os.path.join('data')
 
 # Automatically detect actions from the data folder (must match training)
@@ -32,7 +33,7 @@ display_names = {
     'how_are_you_': 'How Are You?',
     'i': 'I',
     'introduce': 'Introduce',
-
+    'thankyou' : "Present" ,
     'judges': 'Judges',
     'unmuted': 'Unmuted',
     'we': 'We',
@@ -43,11 +44,11 @@ def get_display_name(action):
     return display_names.get(action, action.replace('_', ' ').title())
 
 sequence_length = 30
-threshold = 0.85          # Prediction confidence threshold (filters out low-confidence noise)
-CONFIDENCE_MARGIN = 0.35  # Top class must lead runner-up by at least 35% to prevent ambiguous guesses
-CONSISTENCY_FRAMES = 6    # Must hold same high-confidence sign for 6 consecutive frames (~200ms)
-MIN_ACTIVE_VELOCITY = 0.10 # Active movement gate; stationary hands stay in "Status: ..." and never default
-SPEAK_COOLDOWN = 3.1      # Seconds before repeating the same word
+threshold = 0.70          # Prediction confidence threshold (filters out low-confidence noise)
+CONFIDENCE_MARGIN = 0.15  # Top class must lead runner-up by at least 15% to prevent ambiguous guesses
+CONSISTENCY_FRAMES = 4    # Must hold same high-confidence sign for 4 consecutive frames (~130ms)
+MIN_ACTIVE_VELOCITY = 0.02 # Active movement gate; lowered to 0.02m/s so stationary/held signs register
+SPEAK_COOLDOWN = 1.2      # Seconds before repeating the same word
 CAMERA_INDEX = None   # Set to 0, 1, 2 for a specific camera, or None for auto-detect
 
 # Check if camera index passed via command line argument (e.g. `python 3_inference_pc.py 1`)
@@ -149,8 +150,14 @@ def speak(text, velocity=0.0):
                 log_text = f"{text}."
                 spoken_text = f"{text}."
                 
-            print(f"[METRIC KINEMATICS] Action: {text} | True Speed: {velocity:.2f} m/s | Depth: {metric_tracker.current_Z:.2f} m")
-            print(f"[Voice Agent] Synthesizing: '{log_text}' | Style: {dynamic_style:.2f} | Stab: {dynamic_stability:.2f} | Spd: {dynamic_speed:.2f}")
+            msg1 = f"[METRIC KINEMATICS] Action: {text} | True Speed: {velocity:.2f} m/s | Depth: {metric_tracker.current_Z:.2f} m"
+            msg2 = f"[Voice Agent] Synthesizing: '{log_text}' | Style: {dynamic_style:.2f} | Stab: {dynamic_stability:.2f} | Spd: {dynamic_speed:.2f}"
+            print(msg1)
+            print(msg2)
+            terminal_logs.append(msg1)
+            terminal_logs.append(msg2)
+            if len(terminal_logs) > 15:
+                del terminal_logs[:-15]
 
             # 3. VOICE SETTINGS PAYLOAD
             audio = el_client.text_to_speech.convert(
@@ -203,7 +210,21 @@ def extract_keypoints(results):
             # Checking classification (Left vs Right)
             handedness = results.multi_handedness[idx].classification[0].label
             
-            flattened = np.array([[lm.x, lm.y, lm.z] for lm in hand_curr.landmark]).flatten()
+            landmarks = np.array([[lm.x, lm.y, lm.z] for lm in hand_curr.landmark])
+            
+            # 1. Zero-Center to Wrist (makes it invariant to screen position)
+            wrist = landmarks[0]
+            landmarks = landmarks - wrist
+            
+            # 2. Depth/Scale Normalization (makes it invariant to camera distance)
+            x_max, x_min = np.max(landmarks[:, 0]), np.min(landmarks[:, 0])
+            y_max, y_min = np.max(landmarks[:, 1]), np.min(landmarks[:, 1])
+            box_size = max(x_max - x_min, y_max - y_min)
+            
+            if box_size > 0:
+                landmarks = landmarks / box_size
+                
+            flattened = landmarks.flatten()
             
             if handedness == 'Right': # Swapped per user request
                 lh = flattened
@@ -290,15 +311,15 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
         current_action = "NONE"  # Default to NONE
         
         try:
-            # Case A: No hands detected
+            # Case A: Always append keypoints (zeroed if no hands) to keep 30-frame rolling window alive
+            keypoints = extract_keypoints(results)
+            sequence.append(keypoints)
+            sequence = sequence[-30:]
+            
             if not results.multi_hand_landmarks:
                 current_action = "NONE"
-                sequence.clear()
                 predictions.clear()
             else:
-                keypoints = extract_keypoints(results)
-                sequence.append(keypoints)
-                sequence = sequence[-30:] # Keep last 30 frames
                 
                 if len(sequence) == 30 and model:
                     # Metric Hand Tracking updates every frame
@@ -402,6 +423,12 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
             cv2.putText(display_frame, "[STABILIZATION: OFF (Press 'S')]", (20, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (120, 120, 120), 1)
 
         cv2.imshow('UNMUTED Prototype', display_frame)
+
+        # Real-time Terminal Log Window
+        log_canvas = np.zeros((350, 800, 3), dtype=np.uint8)
+        for i, msg in enumerate(terminal_logs):
+            cv2.putText(log_canvas, msg, (10, 25 + i * 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
+        cv2.imshow('Terminal Logs', log_canvas)
 
         key = cv2.waitKey(10) & 0xFF
         if key == ord('q'):
