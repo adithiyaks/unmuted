@@ -44,11 +44,13 @@ def get_display_name(action):
     return display_names.get(action, action.replace('_', ' ').title())
 
 sequence_length = 30
-threshold = 0.70          # Prediction confidence threshold (filters out low-confidence noise)
-CONFIDENCE_MARGIN = 0.15  # Top class must lead runner-up by at least 15% to prevent ambiguous guesses
-CONSISTENCY_FRAMES = 4    # Must hold same high-confidence sign for 4 consecutive frames (~130ms)
-MIN_ACTIVE_VELOCITY = 0.02 # Active movement gate; lowered to 0.02m/s so stationary/held signs register
-SPEAK_COOLDOWN = 1.2      # Seconds before repeating the same word
+threshold = 0.65          # Prediction confidence threshold (fast, responsive)
+CONFIDENCE_MARGIN = 0.12  # Top class must lead runner-up by at least 12% to prevent ambiguous guesses
+CONSISTENCY_FRAMES = 3    # Must hold sign for 3 consecutive frames (~100ms) for snappy response
+MIN_ACTIVE_VELOCITY = 0.005 # Active movement gate; allows stationary/held signs to register without breaking streak
+SPEAK_COOLDOWN = 0.5      # Seconds before repeating the same word
+IDLE_TIMEOUT_HANDS_DOWN = 0.45 # Fast flush: 0.45s after hands leave frame to speak sentence
+IDLE_TIMEOUT_HANDS_UP = 0.85   # 0.85s pause between signs while hands still visible before speaking
 CAMERA_INDEX = None   # Set to 0, 1, 2 for a specific camera, or None for auto-detect
 
 # Check if camera index passed via command line argument (e.g. `python 3_inference_pc.py 1`)
@@ -69,7 +71,7 @@ from elevenlabs import VoiceSettings
 
 # Initialize pygame mixer for audio playback
 pygame.mixer.init()
-el_client = ElevenLabs(api_key="sk_de8d6f1de3e41636b775c201c05412d83cf8a32988bd1575")
+el_client = ElevenLabs(api_key="sk_3952c2bc91a980c3d6816017dfe1df468a5b7072584359c5")
 
 # --- KINEMATICS & PROSODY TUNING ---
 # Lower VELOCITY_MAX means less hand shaking required to reach peak Style and Speed
@@ -123,63 +125,83 @@ class MetricHandTracker:
 
 metric_tracker = MetricHandTracker(640, 480)
 
+tts_lock = threading.Lock()
+is_speaking = False
+
 def speak(text, velocity=0.0):
     """Speaks text using ElevenLabs with dynamic emotion/prosody based on velocity."""
-    def _speak():
-        try:
-            # 1. DYNAMIC EMOTION PARAMETER MAPPING
-            norm_v = np.clip((velocity - VELOCITY_MIN) / (VELOCITY_MAX - VELOCITY_MIN), 0.0, 1.0)
-            
-            # Style: calm (0.05) -> excited (1.00)
-            dynamic_style = MIN_STYLE + norm_v * (MAX_STYLE - MIN_STYLE)
-            dynamic_style = round(float(dynamic_style), 2)
-            
-            # Stability: map velocity inversely to [0.75, 0.25]
-            dynamic_stability = MAX_STABILITY - norm_v * (MAX_STABILITY - MIN_STABILITY)
-            dynamic_stability = round(float(dynamic_stability), 2)
-            
-            # Speed: map velocity [0.85, 1.15]
-            dynamic_speed = MIN_SPEED + norm_v * (MAX_SPEED - MIN_SPEED)
-            dynamic_speed = round(float(dynamic_speed), 2)
-            
-            # 2. PROMPT DECORATION (EXCLAMATION INJECTION)
-            if velocity >= THRESHOLD_EXCITED:
-                log_text = f"[excited] {text.upper()}!"
-                spoken_text = f"{text.upper()}!"
-            else:
-                log_text = f"{text}."
-                spoken_text = f"{text}."
-                
-            msg1 = f"[CONVO ENGINE] Phrase: \"{log_text}\" | Total Words: {len(text.split())} | Overall Avg Vel: {velocity:.4f} -> Mapped Speed: {dynamic_speed:.2f}"
-            msg2 = f"[Voice Agent] Synthesizing: '{log_text}' | Style: {dynamic_style:.2f} | Stab: {dynamic_stability:.2f} | Spd: {dynamic_speed:.2f}"
-            print(msg1)
-            print(msg2)
-            terminal_logs.append(msg1)
-            terminal_logs.append(msg2)
-            if len(terminal_logs) > 15:
-                del terminal_logs[:-15]
+    global is_speaking
+    if is_speaking:
+        return
 
-            # 3. VOICE SETTINGS PAYLOAD
-            audio = el_client.text_to_speech.convert(
-                text=spoken_text,
-                voice_id="JBFqnCBsd6RMkjVDRZzb",
-                model_id="eleven_multilingual_v2",  # Best model for expressive nuance and emotion prompts
-                voice_settings=VoiceSettings(
-                    stability=dynamic_stability,
-                    similarity_boost=0.75,
-                    style=dynamic_style,
-                    use_speaker_boost=True,
-                    speed=dynamic_speed
-                )
-            )
-            audio_bytes = b"".join(audio)
-            pygame.mixer.music.load(io.BytesIO(audio_bytes))
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(10)
-        except Exception as e:
-            print(f"[TTS ERROR] {e}")
-            
+    def _speak():
+        global is_speaking
+        with tts_lock:
+            is_speaking = True
+            try:
+                # 1. DYNAMIC EMOTION PARAMETER MAPPING
+                norm_v = np.clip((velocity - VELOCITY_MIN) / (VELOCITY_MAX - VELOCITY_MIN), 0.0, 1.0)
+                
+                # Style: calm (0.05) -> excited (1.00)
+                dynamic_style = MIN_STYLE + norm_v * (MAX_STYLE - MIN_STYLE)
+                dynamic_style = round(float(dynamic_style), 2)
+                
+                # Stability: map velocity inversely to [0.75, 0.25]
+                dynamic_stability = MAX_STABILITY - norm_v * (MAX_STABILITY - MIN_STABILITY)
+                dynamic_stability = round(float(dynamic_stability), 2)
+                
+                # Speed: map velocity [0.85, 1.15]
+                dynamic_speed = MIN_SPEED + norm_v * (MAX_SPEED - MIN_SPEED)
+                dynamic_speed = round(float(dynamic_speed), 2)
+                
+                # 2. PROMPT DECORATION (EXCLAMATION INJECTION)
+                if velocity >= THRESHOLD_EXCITED:
+                    log_text = f"[excited] {text.upper()}!"
+                    spoken_text = f"{text.upper()}!"
+                else:
+                    log_text = f"{text}."
+                    spoken_text = f"{text}."
+                    
+                msg1 = f"[CONVO ENGINE] Phrase: \"{log_text}\" | Total Words: {len(text.split())} | Overall Avg Vel: {velocity:.4f} -> Mapped Speed: {dynamic_speed:.2f}"
+                msg2 = f"[Voice Agent] Synthesizing: '{log_text}' | Style: {dynamic_style:.2f} | Stab: {dynamic_stability:.2f} | Spd: {dynamic_speed:.2f}"
+                print(msg1)
+                print(msg2)
+                terminal_logs.append(msg1)
+                terminal_logs.append(msg2)
+                if len(terminal_logs) > 15:
+                    del terminal_logs[:-15]
+
+                # 3. VOICE SETTINGS PAYLOAD WITH RETRY
+                for attempt in range(2):
+                    try:
+                        audio = el_client.text_to_speech.convert(
+                            text=spoken_text,
+                            voice_id="JBFqnCBsd6RMkjVDRZzb",
+                            model_id="eleven_multilingual_v2",  # Best model for expressive nuance and emotion prompts
+                            voice_settings=VoiceSettings(
+                                stability=dynamic_stability,
+                                similarity_boost=0.75,
+                                style=dynamic_style,
+                                use_speaker_boost=True,
+                                speed=dynamic_speed
+                            )
+                        )
+                        audio_bytes = b"".join(audio)
+                        pygame.mixer.music.load(io.BytesIO(audio_bytes))
+                        pygame.mixer.music.play()
+                        while pygame.mixer.music.get_busy():
+                            pygame.time.Clock().tick(10)
+                        break
+                    except Exception as net_err:
+                        if attempt == 0:
+                            time.sleep(0.4)
+                            continue
+                        print(f"[TTS ERROR] Network/Connection dropped: {net_err}")
+            except Exception as e:
+                print(f"[TTS ERROR] {e}")
+            finally:
+                is_speaking = False
+                
     threading.Thread(target=_speak, daemon=True).start()
 
 # --- MEDIAPIPE SETUP (HANDS ONLY) ---
@@ -258,6 +280,7 @@ last_avg_v = 0.0
 convo_tokens = []
 convo_velocities = []
 last_token_time = 0.0
+first_word_ignored = False
 
 # VidStab Initialization
 try:
@@ -382,11 +405,24 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
             # 2. OR, it's the SAME word, but enough time (SPEAK_COOLDOWN) has passed since we last spoke it.
             if (current_action != last_spoken_word) or (current_time - last_spoken_time > SPEAK_COOLDOWN):
                 display_word = get_display_name(current_action)
-                convo_tokens.append(display_word)
-                convo_velocities.append(last_avg_v)
-                last_spoken_word = current_action
-                last_spoken_time = current_time
-                last_token_time = current_time
+                
+                if display_word in convo_tokens:
+                    # Ignore if the word is already in the current sentence
+                    last_spoken_word = current_action
+                    last_spoken_time = current_time
+                elif len(convo_tokens) == 0 and not first_word_ignored:
+                    # Ignore the very first word of the sentence (transitional noise as hand enters frame)
+                    first_word_ignored = True
+                    # Do NOT lock last_spoken_word so the real intended sign registers immediately
+                    last_spoken_word = None
+                    last_spoken_time = 0
+                else:
+                    convo_tokens.append(display_word)
+                    convo_velocities.append(last_avg_v)
+                    last_spoken_word = current_action
+                    last_spoken_time = current_time
+                    last_token_time = current_time
+                
                 # Notice: We DO NOT clear predictions here. If you hold the sign, it remains the current_action, 
                 # but won't be appended again until SPEAK_COOLDOWN passes!
             
@@ -394,7 +430,16 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
         if not stabilization_mode:
             cv2.rectangle(image, (0,0), (640, 60), (50, 50, 50), -1)  # Dark gray background
             
-            phrase_text = f"Building: {' '.join(convo_tokens)}"
+            hands_in_frame = bool(results.multi_hand_landmarks)
+            idle_limit = IDLE_TIMEOUT_HANDS_UP if hands_in_frame else IDLE_TIMEOUT_HANDS_DOWN
+            
+            if len(convo_tokens) > 0 and last_token_time > 0:
+                time_left = max(0.0, idle_limit - (time.time() - last_token_time))
+                phrase_text = f"Building: {' '.join(convo_tokens)}  [{time_left:.1f}s]"
+            elif convo_tokens:
+                phrase_text = f"Building: {' '.join(convo_tokens)}"
+            else:
+                phrase_text = "Building: (ready - show sign)"
             cv2.putText(image, phrase_text, (5, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
             
             if current_action == "NONE":
@@ -441,7 +486,9 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
 
         key = cv2.waitKey(10) & 0xFF
         
-        is_idle = (time.time() - last_token_time) > 1.5 if last_token_time > 0 else False
+        hands_in_frame = bool(results.multi_hand_landmarks)
+        idle_limit = IDLE_TIMEOUT_HANDS_UP if hands_in_frame else IDLE_TIMEOUT_HANDS_DOWN
+        is_idle = (time.time() - last_token_time) > idle_limit if last_token_time > 0 else False
         if (key == ord(' ') or is_idle) and len(convo_tokens) > 0:
             avg_vel = sum(convo_velocities) / len(convo_velocities)
             sentence_text = " ".join(convo_tokens)
@@ -449,6 +496,14 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
             convo_tokens.clear()
             convo_velocities.clear()
             last_token_time = 0
+            first_word_ignored = False
+            last_spoken_word = ""
+            
+        # Also reset first_word_ignored if the idle timeout cleared an empty sentence
+        if is_idle and len(convo_tokens) == 0:
+            first_word_ignored = False
+            last_token_time = 0
+            last_spoken_word = ""
 
         if key == ord('q'):
             break

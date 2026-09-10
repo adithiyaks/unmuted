@@ -68,7 +68,7 @@ from elevenlabs import VoiceSettings
 
 # Initialize pygame mixer for audio playback
 pygame.mixer.init()
-el_client = ElevenLabs(api_key="sk_ccb3ef641959fec40ddf30a6c2c89b4181ae3fa079c57424")
+el_client = ElevenLabs(api_key="sk_3952c2bc91a980c3d6816017dfe1df468a5b7072584359c5")
 
 # --- KINEMATICS & PROSODY TUNING ---
 # Lower VELOCITY_MAX means less hand shaking required to reach peak Style and Speed

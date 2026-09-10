@@ -3,7 +3,7 @@ import pygame
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
 
-client = ElevenLabs(api_key="sk_ccb3ef641959fec40ddf30a6c2c89b4181ae3fa079c57424")
+client = ElevenLabs(api_key="sk_3952c2bc91a980c3d6816017dfe1df468a5b7072584359c5")
 
 # Rate / Speed control:
 # 1.0 = normal speed

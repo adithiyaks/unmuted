@@ -69,7 +69,7 @@ from elevenlabs import VoiceSettings
 
 # Initialize pygame mixer for audio playback
 pygame.mixer.init()
-el_client = ElevenLabs(api_key="sk_ccb3ef641959fec40ddf30a6c2c89b4181ae3fa079c57424")
+el_client = ElevenLabs(api_key="sk_3952c2bc91a980c3d6816017dfe1df468a5b7072584359c5")
 
 # --- KINEMATICS & PROSODY TUNING ---
 # Lower VELOCITY_MAX means less hand shaking required to reach peak Style and Speed
@@ -123,63 +123,83 @@ class MetricHandTracker:
 
 metric_tracker = MetricHandTracker(640, 480)
 
+tts_lock = threading.Lock()
+is_speaking = False
+
 def speak(text, velocity=0.0):
     """Speaks text using ElevenLabs with dynamic emotion/prosody based on velocity."""
-    def _speak():
-        try:
-            # 1. DYNAMIC EMOTION PARAMETER MAPPING
-            norm_v = np.clip((velocity - VELOCITY_MIN) / (VELOCITY_MAX - VELOCITY_MIN), 0.0, 1.0)
-            
-            # Style: calm (0.05) -> excited (1.00)
-            dynamic_style = MIN_STYLE + norm_v * (MAX_STYLE - MIN_STYLE)
-            dynamic_style = round(float(dynamic_style), 2)
-            
-            # Stability: map velocity inversely to [0.75, 0.25]
-            dynamic_stability = MAX_STABILITY - norm_v * (MAX_STABILITY - MIN_STABILITY)
-            dynamic_stability = round(float(dynamic_stability), 2)
-            
-            # Speed: map velocity [0.85, 1.15]
-            dynamic_speed = MIN_SPEED + norm_v * (MAX_SPEED - MIN_SPEED)
-            dynamic_speed = round(float(dynamic_speed), 2)
-            
-            # 2. PROMPT DECORATION (EXCLAMATION INJECTION)
-            if velocity >= THRESHOLD_EXCITED:
-                log_text = f"[excited] {text.upper()}!"
-                spoken_text = f"{text.upper()}!"
-            else:
-                log_text = f"{text}."
-                spoken_text = f"{text}."
-                
-            msg1 = f"[METRIC KINEMATICS] Action: {text} | True Speed: {velocity:.2f} m/s | Depth: {metric_tracker.current_Z:.2f} m"
-            msg2 = f"[Voice Agent] Synthesizing: '{log_text}' | Style: {dynamic_style:.2f} | Stab: {dynamic_stability:.2f} | Spd: {dynamic_speed:.2f}"
-            print(msg1)
-            print(msg2)
-            terminal_logs.append(msg1)
-            terminal_logs.append(msg2)
-            if len(terminal_logs) > 15:
-                del terminal_logs[:-15]
+    global is_speaking
+    if is_speaking:
+        return
 
-            # 3. VOICE SETTINGS PAYLOAD
-            audio = el_client.text_to_speech.convert(
-                text=spoken_text,
-                voice_id="JBFqnCBsd6RMkjVDRZzb",
-                model_id="eleven_multilingual_v2",  # Best model for expressive nuance and emotion prompts
-                voice_settings=VoiceSettings(
-                    stability=dynamic_stability,
-                    similarity_boost=0.75,
-                    style=dynamic_style,
-                    use_speaker_boost=True,
-                    speed=dynamic_speed
-                )
-            )
-            audio_bytes = b"".join(audio)
-            pygame.mixer.music.load(io.BytesIO(audio_bytes))
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(10)
-        except Exception as e:
-            print(f"[TTS ERROR] {e}")
-            
+    def _speak():
+        global is_speaking
+        with tts_lock:
+            is_speaking = True
+            try:
+                # 1. DYNAMIC EMOTION PARAMETER MAPPING
+                norm_v = np.clip((velocity - VELOCITY_MIN) / (VELOCITY_MAX - VELOCITY_MIN), 0.0, 1.0)
+                
+                # Style: calm (0.05) -> excited (1.00)
+                dynamic_style = MIN_STYLE + norm_v * (MAX_STYLE - MIN_STYLE)
+                dynamic_style = round(float(dynamic_style), 2)
+                
+                # Stability: map velocity inversely to [0.75, 0.25]
+                dynamic_stability = MAX_STABILITY - norm_v * (MAX_STABILITY - MIN_STABILITY)
+                dynamic_stability = round(float(dynamic_stability), 2)
+                
+                # Speed: map velocity [0.85, 1.15]
+                dynamic_speed = MIN_SPEED + norm_v * (MAX_SPEED - MIN_SPEED)
+                dynamic_speed = round(float(dynamic_speed), 2)
+                
+                # 2. PROMPT DECORATION (EXCLAMATION INJECTION)
+                if velocity >= THRESHOLD_EXCITED:
+                    log_text = f"[excited] {text.upper()}!"
+                    spoken_text = f"{text.upper()}!"
+                else:
+                    log_text = f"{text}."
+                    spoken_text = f"{text}."
+                    
+                msg1 = f"[METRIC KINEMATICS] Action: {text} | True Speed: {velocity:.2f} m/s | Depth: {metric_tracker.current_Z:.2f} m"
+                msg2 = f"[Voice Agent] Synthesizing: '{log_text}' | Style: {dynamic_style:.2f} | Stab: {dynamic_stability:.2f} | Spd: {dynamic_speed:.2f}"
+                print(msg1)
+                print(msg2)
+                terminal_logs.append(msg1)
+                terminal_logs.append(msg2)
+                if len(terminal_logs) > 15:
+                    del terminal_logs[:-15]
+
+                # 3. VOICE SETTINGS PAYLOAD WITH RETRY
+                for attempt in range(2):
+                    try:
+                        audio = el_client.text_to_speech.convert(
+                            text=spoken_text,
+                            voice_id="JBFqnCBsd6RMkjVDRZzb",
+                            model_id="eleven_multilingual_v2",
+                            voice_settings=VoiceSettings(
+                                stability=dynamic_stability,
+                                similarity_boost=0.75,
+                                style=dynamic_style,
+                                use_speaker_boost=True,
+                                speed=dynamic_speed
+                            )
+                        )
+                        audio_bytes = b"".join(audio)
+                        pygame.mixer.music.load(io.BytesIO(audio_bytes))
+                        pygame.mixer.music.play()
+                        while pygame.mixer.music.get_busy():
+                            pygame.time.Clock().tick(10)
+                        break
+                    except Exception as net_err:
+                        if attempt == 0:
+                            time.sleep(0.4)
+                            continue
+                        print(f"[TTS ERROR] Network/Connection dropped: {net_err}")
+            except Exception as e:
+                print(f"[TTS ERROR] {e}")
+            finally:
+                is_speaking = False
+                
     threading.Thread(target=_speak, daemon=True).start()
 
 # --- MEDIAPIPE SETUP (HANDS ONLY) ---
