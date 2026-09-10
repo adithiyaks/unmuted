@@ -16,6 +16,8 @@ DATA_PATH = os.path.join('data')
 no_sequences = 40
 sequence_length = 30
 start_folder = 0
+EXPOSURE_ALPHA = 0.88   # Contrast scale (1.0 = normal, 0.85-0.90 = reduces harsh glare)
+EXPOSURE_BETA = -20     # Brightness offset (0 = normal, -15 to -30 = slightly dimmer)
 
 print("Configuration set.")
 
@@ -93,6 +95,10 @@ def collect_data_for_action(action, cap, hands):
                 print("Camera read failed.")
                 quit_requested = True
                 break
+
+            # Apply slight exposure / glare reduction
+            if EXPOSURE_ALPHA != 1.0 or EXPOSURE_BETA != 0:
+                frame = cv2.convertScaleAbs(frame, alpha=EXPOSURE_ALPHA, beta=EXPOSURE_BETA)
 
             # Make detections
             image, results = mediapipe_detection(frame, hands)

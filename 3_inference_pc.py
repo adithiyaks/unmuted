@@ -26,11 +26,14 @@ print(f"Loaded {len(actions)} actions: {actions.tolist()}")
 # Display names mapping (folder name -> display text)
 display_names = {
     'good_morning': 'Good Morning',
-    'judge': 'Judges',
     'hello': 'Hello',
     'help': 'Help',
+    'hi': 'Hi',
+    'how_are_you_': 'How Are You?',
     'i': 'I',
-    'present': 'Present',
+    'introduce': 'Introduce',
+
+    'judges': 'Judges',
     'unmuted': 'Unmuted',
     'we': 'We',
 }
@@ -40,8 +43,11 @@ def get_display_name(action):
     return display_names.get(action, action.replace('_', ' ').title())
 
 sequence_length = 30
-threshold = 0.8
-SPEAK_COOLDOWN = 3.0  # Seconds before repeating the same word
+threshold = 0.85          # Prediction confidence threshold (filters out low-confidence noise)
+CONFIDENCE_MARGIN = 0.35  # Top class must lead runner-up by at least 35% to prevent ambiguous guesses
+CONSISTENCY_FRAMES = 6    # Must hold same high-confidence sign for 6 consecutive frames (~200ms)
+MIN_ACTIVE_VELOCITY = 0.010 # Active movement gate; stationary hands stay in "Status: ..." and never default
+SPEAK_COOLDOWN = 3.0      # Seconds before repeating the same word
 CAMERA_INDEX = None   # Set to 0, 1, 2 for a specific camera, or None for auto-detect
 
 # Check if camera index passed via command line argument (e.g. `python 3_inference_pc.py 1`)
@@ -49,33 +55,81 @@ import sys
 if len(sys.argv) > 1 and sys.argv[1].isdigit():
     CAMERA_INDEX = int(sys.argv[1])
 
-# --- TTS Setup (Using Windows Native Speech via PowerShell) ---
-import subprocess
+# --- CAMERA EXPOSURE & BRIGHTNESS TUNING ---
+# Tweak these values if the room lighting changes:
+EXPOSURE_ALPHA = 0.88   # Contrast scale (1.0 = normal, 0.85-0.90 = reduces harsh glare)
+EXPOSURE_BETA = -30     # Brightness offset (0 = normal, -15 to -30 = slightly dimmer)
 
-def speak(text, sapi_rate=3, sapi_volume=80):
-    """Speaks text using Windows native TTS via PowerShell.
-    
-    Args:
-        text: The text to speak.
-        sapi_rate: SAPI Rate property (-10 to 10). Default 3.
-        sapi_volume: SAPI Volume property (0 to 100). Default 80.
-    """
+# --- TTS Setup (ElevenLabs) ---
+import io
+import pygame
+from elevenlabs.client import ElevenLabs
+from elevenlabs import VoiceSettings
+
+# Initialize pygame mixer for audio playback
+pygame.mixer.init()
+el_client = ElevenLabs(api_key="sk_ccb3ef641959fec40ddf30a6c2c89b4181ae3fa079c57424")
+
+# --- KINEMATICS & PROSODY TUNING ---
+# Lower VELOCITY_MAX means less hand shaking required to reach peak Style and Speed
+VELOCITY_MIN = 0.008       # Calm / slow baseline movement
+VELOCITY_MAX = 0.065       # Increased from 0.050 (but lower than orig 0.080): balanced effort for max style
+THRESHOLD_EXCITED = 0.045  # Velocity threshold to trigger excited exclamation
+
+MIN_STYLE, MAX_STYLE = 0.05, 1.00
+MIN_STABILITY, MAX_STABILITY = 0.25, 0.75
+MIN_SPEED, MAX_SPEED = 0.85, 1.15
+
+def speak(text, velocity=0.0):
+    """Speaks text using ElevenLabs with dynamic emotion/prosody based on velocity."""
     def _speak():
         try:
-            print(f"[TTS] Speaking: {text}  (rate={sapi_rate}, vol={sapi_volume})")  # Debug
-            # Use PowerShell to access Windows SAPI directly
-            cmd = (
-                f'Add-Type -AssemblyName System.Speech; '
-                f'$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer; '
-                f'$synth.Rate = {sapi_rate}; '
-                f'$synth.Volume = {sapi_volume}; '
-                f'$synth.Speak("{text}")'
+            # 1. DYNAMIC EMOTION PARAMETER MAPPING
+            norm_v = np.clip((velocity - VELOCITY_MIN) / (VELOCITY_MAX - VELOCITY_MIN), 0.0, 1.0)
+            
+            # Style: calm (0.05) -> excited (1.00)
+            dynamic_style = MIN_STYLE + norm_v * (MAX_STYLE - MIN_STYLE)
+            dynamic_style = round(float(dynamic_style), 2)
+            
+            # Stability: map velocity inversely to [0.75, 0.25]
+            dynamic_stability = MAX_STABILITY - norm_v * (MAX_STABILITY - MIN_STABILITY)
+            dynamic_stability = round(float(dynamic_stability), 2)
+            
+            # Speed: map velocity [0.85, 1.15]
+            dynamic_speed = MIN_SPEED + norm_v * (MAX_SPEED - MIN_SPEED)
+            dynamic_speed = round(float(dynamic_speed), 2)
+            
+            # 2. PROMPT DECORATION (EXCLAMATION INJECTION)
+            if velocity >= THRESHOLD_EXCITED:
+                log_text = f"[excited] {text.upper()}!"
+                spoken_text = f"{text.upper()}!"
+            else:
+                log_text = f"{text}."
+                spoken_text = f"{text}."
+                
+            print(f"[Voice Agent] Synthesizing: '{log_text}' | Style: {dynamic_style:.2f} | Stab: {dynamic_stability:.2f} | Spd: {dynamic_speed:.2f}")
+
+            # 3. VOICE SETTINGS PAYLOAD
+            audio = el_client.text_to_speech.convert(
+                text=spoken_text,
+                voice_id="JBFqnCBsd6RMkjVDRZzb",
+                model_id="eleven_multilingual_v2",  # Best model for expressive nuance and emotion prompts
+                voice_settings=VoiceSettings(
+                    stability=dynamic_stability,
+                    similarity_boost=0.75,
+                    style=dynamic_style,
+                    use_speaker_boost=True,
+                    speed=dynamic_speed
+                )
             )
-            subprocess.run(['powershell', '-Command', cmd], 
-                          creationflags=subprocess.CREATE_NO_WINDOW,
-                          capture_output=True)
+            audio_bytes = b"".join(audio)
+            pygame.mixer.music.load(io.BytesIO(audio_bytes))
+            pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy():
+                pygame.time.Clock().tick(10)
         except Exception as e:
             print(f"[TTS ERROR] {e}")
+            
     threading.Thread(target=_speak, daemon=True).start()
 
 # --- MEDIAPIPE SETUP (HANDS ONLY) ---
@@ -139,7 +193,7 @@ def debug_hand_kinematics(sequence):
         active_velocities.extend(right_deltas)
         
     if not active_velocities:
-        return
+        return 0.0
         
     avg_v = np.mean(active_velocities)
     peak_v = np.max(active_velocities)
@@ -177,7 +231,8 @@ def debug_hand_kinematics(sequence):
         span_y = max(all_y) - min(all_y)
         area = span_x * span_y
         
-    print(f"[KINEMATICS] Avg Vel: {avg_v:.4f} | Peak Vel: {peak_v:.4f} | Peak Accel: {peak_a:.4f} | BBox Area: {area:.4f}")
+    # print(f"[KINEMATICS] Avg Vel: {avg_v:.4f} | Peak Vel: {peak_v:.4f} | Peak Accel: {peak_a:.4f} | BBox Area: {area:.4f}")
+    return avg_v
 
 # --- MAIN ---
 
@@ -197,6 +252,17 @@ sentence = []
 predictions = []
 last_spoken_word = ""
 last_spoken_time = 0
+last_avg_v = 0.0
+
+# VidStab Initialization
+try:
+    from vidstab import VidStab
+    stabilizer = VidStab(kp_method='FAST')
+except ImportError:
+    print("[WARNING] vidstab not installed. Run: pip install vidstab")
+    stabilizer = None
+
+stabilization_mode = False  # Toggle via 's' key
 
 def open_working_camera(preferred_idx=CAMERA_INDEX):
     """Tries the preferred camera index first, then others if none specified or on failure."""
@@ -231,6 +297,10 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
         if not ret:
             break
 
+        # Apply slight exposure / glare reduction
+        if EXPOSURE_ALPHA != 1.0 or EXPOSURE_BETA != 0:
+            frame = cv2.convertScaleAbs(frame, alpha=EXPOSURE_ALPHA, beta=EXPOSURE_BETA)
+
         # detection
         image, results = mediapipe_detection(frame, hands)
         
@@ -244,28 +314,47 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
             # Case A: No hands detected
             if not results.multi_hand_landmarks:
                 current_action = "NONE"
+                sequence.clear()
+                predictions.clear()
             else:
                 keypoints = extract_keypoints(results)
                 sequence.append(keypoints)
                 sequence = sequence[-30:] # Keep last 30 frames
                 
                 if len(sequence) == 30 and model:
-                    debug_hand_kinematics(sequence)
-                    res = model.predict(np.expand_dims(sequence, axis=0), verbose=0)[0]
-                    predictions.append(np.argmax(res))
+                    last_avg_v = debug_hand_kinematics(sequence)
                     
-                    # Case B: Low confidence check
-                    max_confidence = res[np.argmax(res)]
-                    
-                    if max_confidence < threshold:
+                    # Case B: Resting / Stationary hand guard
+                    # If hands are resting or motionless on screen, never guess an action
+                    if last_avg_v < MIN_ACTIVE_VELOCITY:
                         current_action = "NONE"
+                        predictions.append(None)
                     else:
-                        # Check consistency (Anti-Jitter)
-                        # Check if the last 2 predictions are the same (ULTRA FAST)
-                        if len(predictions) >= 2 and np.unique(predictions[-2:])[0] == np.argmax(res): 
-                            current_action = actions[np.argmax(res)]
-                        else:
+                        res = model.predict(np.expand_dims(sequence, axis=0), verbose=0)[0]
+                        top_idx = int(np.argmax(res))
+                        max_confidence = float(res[top_idx])
+                        
+                        # Margin between top-1 and runner-up class
+                        sorted_probs = np.sort(res)[::-1]
+                        margin = float(sorted_probs[0] - sorted_probs[1]) if len(sorted_probs) > 1 else 1.0
+                        
+                        # Case C: Strict Confidence and Margin check
+                        # If low confidence or ambiguous, NEVER default to any action
+                        if max_confidence < threshold or margin < CONFIDENCE_MARGIN:
                             current_action = "NONE"
+                            predictions.append(None) # Low confidence explicitly breaks any streak!
+                        else:
+                            predictions.append(top_idx)
+                            
+                            # Case D: Anti-Jitter Consistency Check across CONSISTENCY_FRAMES
+                            if len(predictions) >= CONSISTENCY_FRAMES:
+                                recent = predictions[-CONSISTENCY_FRAMES:]
+                                if all(p == top_idx for p in recent):
+                                    current_action = actions[top_idx]
+                                else:
+                                    current_action = "NONE"
+                            else:
+                                current_action = "NONE"
 
         except Exception as e:
             current_action = "NONE"
@@ -273,37 +362,64 @@ with mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_
         # TTS Logic - Only speak if NOT "NONE"
         if current_action != "NONE":
             current_time = time.time()
-            # Speak if: new word OR same word but cooldown passed
+            
+            # Speak if:
+            # 1. It's a completely different word than the last one we spoke.
+            # 2. OR, it's the SAME word, but enough time (SPEAK_COOLDOWN) has passed since we last spoke it.
             if (current_action != last_spoken_word) or (current_time - last_spoken_time > SPEAK_COOLDOWN):
-                speak(get_display_name(current_action))
+                display_word = get_display_name(current_action)
+                speak(display_word, velocity=last_avg_v)
                 last_spoken_word = current_action
                 last_spoken_time = current_time
+                # Notice: We DO NOT clear predictions here. If you hold the sign, it remains the current_action, 
+                # but won't be spoken again until SPEAK_COOLDOWN passes!
             
-        # Visualization
-        cv2.rectangle(image, (0,0), (640, 40), (50, 50, 50), -1)  # Dark gray background
-        
-        if current_action == "NONE":
-            display_text = "Status: ..."
-            text_color = (200, 150, 100)  # Blueish-gray
+        # Visualization (Hidden during Stabilization Demo)
+        if not stabilization_mode:
+            cv2.rectangle(image, (0,0), (640, 40), (50, 50, 50), -1)  # Dark gray background
+            
+            if current_action == "NONE":
+                display_text = "Status: ..."
+                text_color = (200, 150, 100)  # Blueish-gray
+            else:
+                display_text = get_display_name(current_action)
+                text_color = (0, 255, 0)  # Green
+                
+            cv2.putText(image, display_text, (3,30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2, cv2.LINE_AA)
+                       
+            status_list = []
+            if results.multi_handedness:
+                for h in results.multi_handedness:
+                    label = h.classification[0].label
+                    if label == 'Left': status_list.append('Right')
+                    else: status_list.append('Left')
+            status_text = "Tracking: " + (", ".join(status_list) if status_list else "NONE")
+            cv2.putText(image, status_text, (10, 445), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 1)
+            
+            # Small velocity text on screen
+            vel_text = f"Vel: {last_avg_v:.3f}"
+            cv2.putText(image, vel_text, (10, 468), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1)
+        # VidStab Demo Mode Processing
+        if stabilization_mode and stabilizer is not None:
+            # We pass 'image' which has landmarks drawn on it, so they stabilize with the hands!
+            display_frame = stabilizer.stabilize_frame(input_frame=image, smoothing_window=8, border_type='reflect')
+            if display_frame is None:
+                display_frame = image
+            else:
+                cv2.putText(display_frame, "[STABILIZATION: ACTIVE (FAST-LK)]", (20, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         else:
-            display_text = get_display_name(current_action)
-            text_color = (0, 255, 0)  # Green
-            
-        cv2.putText(image, display_text, (3,30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2, cv2.LINE_AA)
-        status_list = []
-        if results.multi_handedness:
-            for h in results.multi_handedness:
-                label = h.classification[0].label
-                if label == 'Left': status_list.append('Right')
-                else: status_list.append('Left')
-        status_text = "Tracking: " + (", ".join(status_list) if status_list else "NONE")
-        cv2.putText(image, status_text, (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,0), 1)
+            display_frame = image
+            cv2.putText(display_frame, "[STABILIZATION: OFF (Press 'S')]", (20, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (120, 120, 120), 1)
 
-        cv2.imshow('UNMUTED Prototype', image)
+        cv2.imshow('UNMUTED Prototype', display_frame)
 
-        if cv2.waitKey(10) & 0xFF == ord('q'):
+        key = cv2.waitKey(10) & 0xFF
+        if key == ord('q'):
             break
+        elif key == ord('s') or key == ord('S'):
+            stabilization_mode = not stabilization_mode
+            print(f"[STABILIZATION] Toggled: {'ENABLED' if stabilization_mode else 'DISABLED'}")
 
     cap.release()
     cv2.destroyAllWindows()
