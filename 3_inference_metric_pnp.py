@@ -12,6 +12,7 @@ import threading
 import subprocess
 
 # --- CONFIGURATION ---
+INDIAN_VOICE_ID = "T3s9anIvGvoeogXyFyMt"
 terminal_logs = []
 DATA_PATH = os.path.join('data')
 
@@ -174,7 +175,7 @@ def speak(text, velocity=0.0):
                     try:
                         audio = el_client.text_to_speech.convert(
                             text=spoken_text,
-                            voice_id="JBFqnCBsd6RMkjVDRZzb",
+                            voice_id=INDIAN_VOICE_ID,
                             model_id="eleven_multilingual_v2",
                             voice_settings=VoiceSettings(
                                 stability=dynamic_stability,

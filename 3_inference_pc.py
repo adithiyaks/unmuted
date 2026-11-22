@@ -12,6 +12,7 @@ import threading
 import subprocess
 
 # --- CONFIGURATION ---
+INDIAN_VOICE_ID = "T3s9anIvGvoeogXyFyMt"
 DATA_PATH = os.path.join('data')
 
 # Automatically detect actions from the data folder (must match training)
@@ -112,7 +113,7 @@ def speak(text, velocity=0.0):
             # 3. VOICE SETTINGS PAYLOAD
             audio = el_client.text_to_speech.convert(
                 text=spoken_text,
-                voice_id="JBFqnCBsd6RMkjVDRZzb",
+                voice_id=INDIAN_VOICE_ID,
                 model_id="eleven_multilingual_v2",  # Best model for expressive nuance and emotion prompts
                 voice_settings=VoiceSettings(
                     stability=dynamic_stability,

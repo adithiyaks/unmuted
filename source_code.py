@@ -13,6 +13,7 @@ import subprocess
 import re
 
 # --- CONFIGURATION ---
+INDIAN_VOICE_ID = "nPczCjzI2devNBz1zQrb"
 terminal_logs = []
 log_lock = threading.Lock()
 
@@ -289,8 +290,8 @@ def speak(text, velocity=0.0):
                     try:
                         audio = el_client.text_to_speech.convert(
                             text=spoken_text,
-                            voice_id="JBFqnCBsd6RMkjVDRZzb",
-                            model_id="eleven_multilingual_v2",  # Crucial for emotional inflection
+                            voice_id=INDIAN_VOICE_ID,
+                            model_id="eleven_multilingual_v2",  # Crucial for Indian English phonetics & emotional inflection
                             voice_settings=VoiceSettings(
                                 stability=dynamic_stability,
                                 similarity_boost=dynamic_similarity,

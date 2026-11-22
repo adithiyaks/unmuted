@@ -5,6 +5,8 @@ from elevenlabs import VoiceSettings
 
 client = ElevenLabs(api_key="sk_3952c2bc91a980c3d6816017dfe1df468a5b7072584359c5")
 
+INDIAN_VOICE_ID = "T3s9anIvGvoeogXyFyMt"
+
 # Rate / Speed control:
 # 1.0 = normal speed
 # > 1.0 = faster (e.g., 1.15 or 1.2)
@@ -15,8 +17,8 @@ SPEECH_SPEED = 1.2
 # Generate natural audio stream with rate control
 audio = client.text_to_speech.convert(
     text="Hi, we are team prime syndicate. We introduce UNMUTED!",
-    voice_id="JBFqnCBsd6RMkjVDRZzb", # e.g. "George" or another free voice
-    model_id="eleven_flash_v2_5",      # Lowest latency model
+    voice_id=INDIAN_VOICE_ID,
+    model_id="eleven_multilingual_v2",      # Indian English voice model
     voice_settings=VoiceSettings(
         stability=0.5,
         similarity_boost=0.75,
